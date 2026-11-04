@@ -68,6 +68,13 @@ class TaskValidation(BaseModelValidation, ObjectExistsValidationMixin):
             raise ValidationError(errors)
 
     @classmethod
+    def validate_resolve(cls, user, **data):
+        cls.validate_update(user, **data)
+        errors = validate_task_vote(user, data)
+        if errors:
+            raise ValidationError(errors)
+
+    @classmethod
     def validate_delete(cls, user, **data):
         super().validate_delete(user, **data)
 
@@ -98,6 +105,32 @@ def validate_task_status(uuid):
     if instance_status in [Task.Status.COMPLETED, Task.Status.FAILED]:
         return [
             {"message": _("tasks_management.validation.task.updating_completed_task") % {'status': instance_status}}]
+    return []
+
+
+def _votes_through_flow(task):
+    # The conditions under which on_task_resolve hands the vote to the flow resolver.
+    return bool(task.flow_id and task.current_step_id
+                and task.executor_action_event == TasksManagementConfig.default_executor_event)
+
+
+def validate_task_vote(user, data):
+    task = Task.objects.get(id=data.get('id'))
+    if task.status != Task.Status.ACCEPTED:
+        return [{"message": _("tasks_management.validation.task.vote_task_not_accepted") % {'status': task.status}}]
+    # The flow resolver checks the voter of a flow task against the pool of its current step.
+    if not _votes_through_flow(task):
+        is_executor = TaskExecutor.objects.filter(
+            task_group_id=task.task_group_id,
+            task_group__is_deleted=False,
+            user_id=user.id,
+            is_deleted=False,
+        ).exists()
+        if not is_executor:
+            return [{"message": _("tasks_management.validation.task.voter_not_executor")}]
+    # The completion policies count every key of business_status as one vote.
+    if set(data.get('business_status') or {}) != {str(user.id)}:
+        return [{"message": _("tasks_management.validation.task.vote_for_another_user")}]
     return []
 
 

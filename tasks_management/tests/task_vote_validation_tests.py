@@ -236,7 +236,7 @@ class TaskVoteValidationTestCase(TestCase):
 
     def test_vote_and_completion_lock_the_task_row(self):
         task = self._task(self.group_all)
-        locked = f'{Task._meta.db_table}'
+        locked = Task._meta.db_table
 
         for call in (lambda: self._vote(self.executor, task),
                      lambda: TaskService(self.executor).complete_task({'id': task.id})):

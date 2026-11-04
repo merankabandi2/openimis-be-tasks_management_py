@@ -165,5 +165,14 @@ msgstr "Approval flow %(code)s is no longer current - pick the latest version."
 msgid "tasks_management.validation.task_flow_assignment.flow_without_steps"
 msgstr "Approval flow %(code)s has no steps, so it cannot take on tasks."
 
+msgid "tasks_management.validation.task.vote_task_not_accepted"
+msgstr "Votes are only accepted on a task in status ACCEPTED. This task is %(status)s."
+
+msgid "tasks_management.validation.task.voter_not_executor"
+msgstr "Only an executor of the task's group can vote on this task."
+
+msgid "tasks_management.validation.task.vote_for_another_user"
+msgstr "A vote can only be recorded under the voting user's own id."
+
 #~ msgid "tasks_management.validation.task_group.code_exists"
 #~ msgstr "Code exists"
