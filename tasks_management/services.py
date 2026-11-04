@@ -51,7 +51,7 @@ class TaskService(BaseService):
         try:
             with transaction.atomic():
                 obj = self.OBJECT_TYPE.objects.select_for_update().get(id=obj_data['id'])
-                # Receivers act on a successful result, so a refusal fires no business event.
+                # A task already COMPLETED or FAILED is refused: the result carries success False and no task data.
                 errors = validate_task_status(obj.id)
                 if errors:
                     raise ValidationError(errors)
