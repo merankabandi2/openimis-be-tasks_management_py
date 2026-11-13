@@ -376,9 +376,16 @@ def on_task_complete_service_handler(service_type):
     def service_operation_handler(operation, user, data):
         # Run the operation form a service by name
         # getattr(ExampleService(user), 'update')(data)
-        return getattr(service_type(user), operation)(data)
+        # The operation runs in its own transaction: a refusal or an exception leaves nothing applied.
+        with transaction.atomic():
+            result = getattr(service_type(user), operation)(data)
+            if isinstance(result, dict) and result.get('success') is False:
+                raise ServiceRefusal(result.get('message'), result.get('detail'))
+            return result
 
     def func(**kwargs):
+        task = None
+        user = None
         try:
             result = kwargs.get('result', {})
             task = result['data']['task']
@@ -397,9 +404,37 @@ def on_task_complete_service_handler(service_type):
                     service_operation_handler(operation, user, data)
         except Exception as e:
             logger.error("Error while executing on_task_complete", exc_info=e)
-            return [str(e)]
+            message, detail = (e.message, e.detail) if isinstance(e, ServiceRefusal) else (None, str(e))
+            _mark_task_failed(task, user, message, detail)
+            return [f"{message}: {detail}" if message else detail]
 
     return func
+
+
+class ServiceRefusal(Exception):
+    """Raised when a service called on task completion returns an unsuccessful result."""
+
+    def __init__(self, message, detail):
+        super().__init__(detail or message)
+        self.message = message
+        self.detail = detail
+
+
+def _mark_task_failed(task, user, message, detail):
+    """
+    Moves a task whose business operation did not apply to FAILED and stores the reason in
+    `json_ext['failure']`. Never raises: the original error is already being reported.
+    """
+    task_id = (task or {}).get('id')
+    if not task_id:
+        return
+    try:
+        obj = Task.objects.get(id=task_id)
+        obj.status = Task.Status.FAILED
+        obj.json_ext = {**(obj.json_ext or {}), 'failure': {'message': message, 'detail': detail}}
+        obj.save(username=user.login_name if user else None)
+    except Exception as e:
+        logger.error("Could not mark task %s as failed", task_id, exc_info=e)
 
 
 def _get_std_crud_task_data_payload(entity, payload):
