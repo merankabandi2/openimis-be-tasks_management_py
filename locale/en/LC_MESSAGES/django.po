@@ -78,3 +78,9 @@ msgstr "Only an executor of the task's group can vote on this task."
 
 msgid "tasks_management.validation.task.vote_for_another_user"
 msgstr "A vote can only be recorded under the voting user's own id."
+
+msgid "tasks_management.validation.task.update_to_final_status"
+msgstr "An update cannot set a task to %(status)s: the task is completed through its votes."
+
+msgid "tasks_management.validation.task.update_after_triage"
+msgstr "The group and status of a task in status %(status)s cannot be changed."
