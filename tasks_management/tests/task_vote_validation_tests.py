@@ -168,6 +168,78 @@ class TaskVoteValidationTestCase(TestCase):
         self.assertEqual(task.status, Task.Status.ACCEPTED)
         self.assertEqual(task.task_group_id, self.group_any.id)
 
+    def test_triage_with_string_ids_still_accepts_task(self):
+        task = self._task(status=Task.Status.RECEIVED)
+
+        result = TaskService(self.outsider).update({
+            'id': str(task.id),
+            'status': 'ACCEPTED',
+            'task_group_id': str(self.group_any.id),
+        })
+
+        self.assertTrue(result['success'], result)
+        task.refresh_from_db()
+        self.assertEqual(task.status, Task.Status.ACCEPTED)
+        self.assertEqual(task.task_group_id, self.group_any.id)
+
+    def _update(self, user, task, **fields):
+        return TaskService(user).update({'id': task.id, **fields})
+
+    def _assert_update_refused(self, result, task, status, group):
+        self.assertFalse(result['success'], result)
+        self.assertTrue(result['detail'], result)
+        task.refresh_from_db()
+        self.assertEqual(task.status, status)
+        self.assertEqual(task.task_group_id, group.id if group else None)
+        self.assertEqual(self.completions, [])
+
+    def test_non_executor_cannot_move_accepted_task_into_own_group_and_vote(self):
+        own_group = self._create_group('vote_outsider_group', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                       [self.outsider])
+        task = self._task(self.group_any)
+
+        moved = self._update(self.outsider, task, status=Task.Status.ACCEPTED, task_group_id=own_group.id)
+
+        self._assert_update_refused(moved, task, Task.Status.ACCEPTED, self.group_any)
+        self._assert_refused(self._vote(self.outsider, task), task)
+
+    def test_update_cannot_complete_accepted_task(self):
+        for final_status in (Task.Status.COMPLETED, Task.Status.FAILED):
+            with self.subTest(final_status=final_status):
+                task = self._task(self.group_any)
+
+                result = self._update(self.outsider, task, status=final_status, task_group_id=self.group_any.id)
+
+                self._assert_update_refused(result, task, Task.Status.ACCEPTED, self.group_any)
+
+    def test_update_cannot_complete_received_task(self):
+        task = self._task(status=Task.Status.RECEIVED)
+
+        result = self._update(self.executor, task, status=Task.Status.COMPLETED)
+
+        self._assert_update_refused(result, task, Task.Status.RECEIVED, None)
+
+    def test_update_cannot_reset_accepted_task_with_null_status_or_group(self):
+        for fields in ({'status': None}, {'task_group_id': None}):
+            with self.subTest(fields=fields):
+                task = self._task(self.group_any)
+
+                result = self._update(self.outsider, task, **fields)
+
+                self._assert_update_refused(result, task, Task.Status.ACCEPTED, self.group_any)
+
+    def test_saving_accepted_task_unchanged_succeeds(self):
+        for group_id in (self.group_any.id, str(self.group_any.id)):
+            with self.subTest(group_id=type(group_id).__name__):
+                task = self._task(self.group_any)
+
+                result = self._update(self.outsider, task, status='ACCEPTED', task_group_id=group_id)
+
+                self.assertTrue(result['success'], result)
+                task.refresh_from_db()
+                self.assertEqual(task.status, Task.Status.ACCEPTED)
+                self.assertEqual(task.task_group_id, self.group_any.id)
+
     def test_executor_can_vote_again_with_partial_decisions(self):
         task = self._task(self.group_any)
         key = str(self.executor.id)
