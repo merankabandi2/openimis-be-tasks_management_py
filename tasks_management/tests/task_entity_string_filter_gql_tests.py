@@ -106,6 +106,7 @@ class TaskEntityStringFilterGQLTestCase(openIMISGraphQLTestCase):
 
     def test_filter_query_count_does_not_grow_with_tasks(self):
         """The filter must not load each task's entity: same query count for 4 or 14 tasks."""
+        self._query("task", "zzzz")  # warm the content type and user caches
         with CaptureQueriesContext(connection) as before:
             self._query("task", "zzzz")
         for i in range(10):
