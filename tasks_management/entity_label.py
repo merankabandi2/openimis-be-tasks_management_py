@@ -10,10 +10,12 @@ tasks, the filter adds a subquery on that type's table:
 The label of a type comes, in that order, from:
 1. the model's own `label_expression()` classmethod (the core contract proposed
    in OP-3341);
-2. LABEL_EXPRESSIONS below, for the entity types tasks use today;
-3. the default `__str__` of Django or UUIDModel, when the model has none of its own.
-A model whose `__str__` has none of these is still searched in Python, as before,
-but only through the tasks of that type.
+2. LABEL_EXPRESSIONS below, for the entity types tasks use today.
+A model whose `__str__` has neither is still searched in Python, as before, but
+only through the tasks of that type. A model without a `__str__` of its own
+(Django's "<Model> object (<pk>)" or UUIDModel's "[<id>]") is not searched at
+all: its label is only its key, and matching it costs a scan of its table for
+nothing a user would type.
 
 Once core provides `core.gfk.gfk_label_filter` (OP-3341), it is used instead.
 """
@@ -85,7 +87,8 @@ def _upload_records_label(*prefix):
 
 # The label of each entity type tasks point to, matching that model's __str__.
 # Keyed by "app_label.model", so no other module is imported. Models without a
-# __str__ of their own (individual.Group, individual.GroupIndividual) need no entry.
+# __str__ of their own (individual.Group, individual.GroupIndividual) are not
+# searched, see _has_own_str.
 LABEL_EXPRESSIONS = {
     "core.user": _user_label,
     "individual.individual": lambda: _concat("first_name", Value(" "), "last_name"),
@@ -97,14 +100,10 @@ LABEL_EXPRESSIONS = {
 }
 
 
-def _default_label(model):
-    """The label of a model that inherits Django's or UUIDModel's __str__, else None."""
+def _has_own_str(model):
+    """False when `model` inherits Django's or UUIDModel's __str__, which print only the key."""
     owner = next(klass for klass in model.__mro__ if "__str__" in vars(klass))
-    if owner is models.Model:
-        return _concat(Value(f"{model.__name__} object ("), "pk", Value(")"))
-    if owner is UUIDModel:
-        return _concat(Value("["), "id", Value("]"))
-    return None
+    return owner not in (models.Model, UUIDModel)
 
 
 def label_expression(model):
@@ -113,9 +112,7 @@ def label_expression(model):
     if callable(own):
         return own()
     build = LABEL_EXPRESSIONS.get(model._meta.label_lower)
-    if build is not None:
-        return build()
-    return _default_label(model)
+    return build() if build is not None else None
 
 
 def label_queryset(content_type):
@@ -169,10 +166,14 @@ def filter_by_entity_label(queryset, text):
         if type_id is None:
             continue
         content_type = ContentType.objects.get_for_id(type_id)
+        if content_type.model_class() is None:
+            continue  # module not installed: no entity
         labels = label_queryset(content_type)
         if labels is not None:
             matching = labels.filter(_label__icontains=text).values("_pk")
-        else:
+        elif _has_own_str(content_type.model_class()):
             matching = _matching_entity_ids_in_python(queryset, content_type, text)
+        else:
+            continue  # the label is only the key: not searched
         condition |= Q(entity_type_id=type_id, entity_id__in=matching)
     return queryset.filter(condition)

@@ -31,7 +31,7 @@ class TaskEntityStringFilterGQLTestCase(openIMISGraphQLTestCase):
         cls.admin_user = create_test_interactive_user(username="op3332Admin")
         cls.admin_token = BaseTestContext(user=cls.admin_user).get_jwt()
         # Entities of several types: a core User (a label of its own), a
-        # TaskGroup (no __str__, Django's default label), and none.
+        # TaskGroup (no __str__ of its own, so not searched), and none.
         cls.user_entity = create_test_interactive_user(username="op3332Zebrafish")
         cls.other_user_entity = create_test_interactive_user(username="op3332Okapi")
         cls.group_entity = TaskGroup(code="op3332_group", completion_policy="ANY")
@@ -82,9 +82,13 @@ class TaskEntityStringFilterGQLTestCase(openIMISGraphQLTestCase):
 
     def test_filter_matches_each_entity_type(self):
         self.assertEqual(self._events("task", "okapi"), ["op3332_other_user"])
-        self.assertEqual(self._events("task", "taskgroup object"), ["op3332_group"])
-        self.assertEqual(self._events("task", str(self.group_entity.id)), ["op3332_group"])
         self.assertEqual(self._events("task", "op3332"), ["op3332_other_user", "op3332_user"])
+
+    def test_entity_without_own_str_is_not_searched(self):
+        # Its label, "TaskGroup object (<id>)", is only its key.
+        self.assertEqual(self._events("task", "taskgroup object"), [])
+        self.assertEqual(self._events("task", str(self.group_entity.id)), [])
+        self.assertEqual(self._events("taskHistory", "taskgroup object"), [])
 
     def test_task_without_entity_never_matches(self):
         # str(None) is "None": the Python filter used to match entity-less tasks
@@ -124,7 +128,7 @@ class TaskEntityStringFilterGQLTestCase(openIMISGraphQLTestCase):
         with mock.patch.object(entity_label, "LABEL_EXPRESSIONS", labels):
             self.assertEqual(self._events("task", "ZEBRAfish"), ["op3332_user"])
             self.assertEqual(self._events("taskHistory", "ZEBRAfish"), ["op3332_user"])
-            self.assertEqual(self._events("task", "taskgroup object"), ["op3332_group"])
+            self.assertEqual(self._events("task", "taskgroup object"), [])
             self.assertEqual(self._events("task", "none"), [])
 
     def test_user_label_matches_str(self):
