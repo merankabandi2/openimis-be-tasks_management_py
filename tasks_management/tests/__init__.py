@@ -10,3 +10,4 @@ from tasks_management.tests.task_entity_ids_gql_tests import TaskEntityIdsGQLTes
 from tasks_management.tests.task_group_id_gql_tests import TaskGroupIdGQLTestCase  # noqa: F401
 from tasks_management.tests.pending_task_count_gql_tests import PendingTaskCountGQLTestCase  # noqa: F401
 from tasks_management.tests.task_entity_string_filter_gql_tests import TaskEntityStringFilterGQLTestCase  # noqa: F401
+from tasks_management.tests.task_vote_validation_tests import TaskVoteValidationTestCase  # noqa: F401
