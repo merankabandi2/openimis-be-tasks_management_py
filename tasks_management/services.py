@@ -19,7 +19,7 @@ from core.utils import to_json_safe_value
 from tasks_management.apps import TasksManagementConfig
 from tasks_management.models import TaskGroup, TaskExecutor, Task, TaskFlow, TaskFlowStep
 from tasks_management.validation import TaskGroupValidation, TaskExecutorValidation, TaskValidation, \
-    TaskFlowValidation, validate_task_flow_assignment
+    TaskFlowValidation, validate_task_flow_assignment, validate_task_status
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +193,12 @@ class TaskService(BaseService):
     def complete_task(self, obj_data):
         try:
             with transaction.atomic():
-                obj = self.OBJECT_TYPE.objects.get(id=obj_data['id'])
+                obj = self.OBJECT_TYPE.objects.select_for_update().get(id=obj_data['id'])
+                # A task already COMPLETED or FAILED is refused: the result carries success False and no task data.
+                # A flow task arrives with the final status its last vote wrote under the row lock.
+                errors = [] if obj.flow_id else validate_task_status(obj.id)
+                if errors:
+                    raise ValidationError(errors)
                 obj.status = Task.Status.FAILED if obj_data.get('failed', False) else Task.Status.COMPLETED
                 obj.save(username=self.user.login_name)
                 return output_result_success({'task': model_representation(obj), 'user': {'id': f"{self.user.id}"}})
@@ -210,8 +215,9 @@ class TaskService(BaseService):
     @register_service_signal('task_service.resolve_task')
     def resolve_task(self, obj_data):
         try:
-            self.validation_class.validate_update(self.user, **obj_data)
-            obj = self.OBJECT_TYPE.objects.get(id=obj_data['id'])
+            # The lock keeps this save from writing back a status or a vote changed concurrently.
+            obj = self.OBJECT_TYPE.objects.select_for_update().filter(id=obj_data['id']).first()
+            self.validation_class.validate_resolve(self.user, **obj_data)
             incoming_status = obj_data.get('business_status')
             additional_data = obj_data.get('additional_data')
             self._update_task_business_status(obj, incoming_status, additional_data)
