@@ -6,8 +6,10 @@ from core.service_signals import ServiceSignalBindType
 from core.signals import REGISTERED_SERVICE_SIGNALS, bind_service_signal
 from core.test_helpers import create_test_interactive_user
 from tasks_management.apps import TasksManagementConfig
-from tasks_management.models import Task, TaskExecutor, TaskGroup
-from tasks_management.services import TaskGroupService, TaskService
+from django.core.exceptions import ValidationError
+
+from tasks_management.models import Task, TaskDecision, TaskExecutor, TaskFlow, TaskGroup
+from tasks_management.services import TaskFlowService, TaskGroupService, TaskService
 from tasks_management.signals.on_task_resolve import resolve_task_all
 
 APPROVED = 'APPROVED'
@@ -21,6 +23,7 @@ class TaskVoteValidationTestCase(TestCase):
         cls.executor = create_test_interactive_user(username='vote_executor')
         cls.second_executor = create_test_interactive_user(username='vote_second_executor')
         cls.outsider = create_test_interactive_user(username='vote_outsider')
+        cls.unprivileged = create_test_interactive_user(username='vote_unprivileged', roles=[2])
         cls.group_any = cls._create_group('vote_any', TaskGroup.TaskGroupCompletionPolicy.ANY,
                                           [cls.executor, cls.second_executor])
         cls.group_all = cls._create_group('vote_all', TaskGroup.TaskGroupCompletionPolicy.ALL,
@@ -317,3 +320,99 @@ class TaskVoteValidationTestCase(TestCase):
             self.assertTrue(
                 any(locked in query['sql'] and 'FOR UPDATE' in query['sql'] for query in queries),
                 [query['sql'] for query in queries])
+
+    def _flow(self, code, pool):
+        result = TaskFlowService(self.executor).create({
+            'code': code, 'name': code, 'task_sources': [],
+            'steps': [{'task_group_id': str(pool.id), 'completion_policy': 'ANY', 'threshold': None}],
+        })
+        self.assertTrue(result.get('success'), result)
+        return TaskFlow.objects.get(id=result['data']['id'])
+
+    def _flow_task(self, flow):
+        step = flow.steps.get()
+        task = Task(source='vote_test', status=Task.Status.ACCEPTED, task_group=step.task_group,
+                    flow=flow, current_step=step,
+                    executor_action_event=TasksManagementConfig.default_executor_event,
+                    business_event='tasks_management.vote_test', business_status={}, json_ext={})
+        task.save(username=self.executor.login_name)
+        return task
+
+    def test_flow_cannot_be_assigned_to_accepted_task(self):
+        own_pool = self._create_group('vote_flow_own_pool', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                      [self.outsider])
+        flow = self._flow('VOTE_FLOW_OWN', own_pool)
+        task = self._task(self.group_all)
+
+        with self.assertRaises(ValidationError):
+            TaskService(self.outsider).update({'id': task.id, 'flow_id': str(flow.id)})
+
+        task.refresh_from_db()
+        self.assertIsNone(task.flow_id)
+        self.assertEqual(task.task_group_id, self.group_all.id)
+        self._assert_refused(self._vote(self.outsider, task), task)
+
+    def test_flow_can_be_assigned_to_received_task(self):
+        pool = self._create_group('vote_flow_triage_pool', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                  [self.executor])
+        flow = self._flow('VOTE_FLOW_TRIAGE', pool)
+        task = self._task(status=Task.Status.RECEIVED)
+
+        result = TaskService(self.outsider).update({'id': task.id, 'flow_id': str(flow.id)})
+
+        self.assertTrue(result['success'], result)
+        task.refresh_from_db()
+        self.assertEqual(task.flow_id, flow.id)
+        self.assertEqual(task.task_group_id, pool.id)
+        self.assertEqual(task.status, Task.Status.ACCEPTED)
+
+    def test_flow_task_cannot_be_detached_into_another_group(self):
+        pool = self._create_group('vote_flow_det_pool', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                  [self.executor])
+        own_group = self._create_group('vote_flow_det_own', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                       [self.outsider])
+        flow = self._flow('VOTE_FLOW_DET', pool)
+        task = self._flow_task(flow)
+
+        result = TaskService(self.outsider).update({
+            'id': task.id, 'detach_flow': True, 'status': Task.Status.ACCEPTED,
+            'task_group_id': str(own_group.id),
+        })
+
+        self.assertFalse(result['success'], result)
+        task.refresh_from_db()
+        self.assertEqual(task.flow_id, flow.id)
+        self.assertEqual(task.task_group_id, pool.id)
+
+    def test_flow_task_vote_from_pool_member_completes_once(self):
+        pool = self._create_group('vote_flow_pool', TaskGroup.TaskGroupCompletionPolicy.ANY, [self.executor])
+        task = self._flow_task(self._flow('VOTE_FLOW', pool))
+
+        result = self._vote(self.executor, task)
+
+        self.assertTrue(result['success'], result)
+        task.refresh_from_db()
+        self.assertEqual(task.status, Task.Status.COMPLETED)
+        self.assertEqual(len(self._successful_completions()), 1)
+        self.assertEqual(TaskDecision.objects.filter(task=task, user=self.executor).count(), 1)
+
+    def test_flow_task_vote_from_outside_the_step_pool_is_refused(self):
+        pool = self._create_group('vote_flow_pool_out', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                  [self.executor])
+        task = self._flow_task(self._flow('VOTE_FLOW_OUT', pool))
+
+        with self.assertRaises(ValidationError):
+            self._vote(self.unprivileged, task)
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, Task.Status.ACCEPTED)
+        self.assertEqual(TaskDecision.objects.filter(task=task).count(), 0)
+        self.assertEqual(self.completions, [])
+
+    def test_flow_task_vote_under_another_key_is_refused(self):
+        pool = self._create_group('vote_flow_pool_key', TaskGroup.TaskGroupCompletionPolicy.ANY,
+                                  [self.executor, self.second_executor])
+        task = self._flow_task(self._flow('VOTE_FLOW_KEY', pool))
+
+        self._assert_refused(self._vote(self.executor, task, key=self.second_executor.id), task)
+        self.assertEqual(TaskDecision.objects.filter(task=task).count(), 0)

@@ -362,6 +362,12 @@ def validate_task_flow_assignment(task, flow, detach=False):
                 "tasks_management.validation.task_flow_assignment.not_on_a_flow")})
         return errors
 
+    # An ACCEPTED task keeps the voters it was accepted with: a flow comes with the task's
+    # creation or with its triage, as a group does.
+    if task.status == Task.Status.ACCEPTED:
+        errors.append({"message": _(
+            "tasks_management.validation.task.update_after_triage") % {'status': task.status}})
+
     # The same two gates create() applies when matching a flow by source.
     # A source whose business logic runs on the first vote would bypass every
     # later step, and a task resolved through a custom executor event never
